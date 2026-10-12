@@ -7,7 +7,7 @@ Standards-Version: 4.7.2
 Homepage: https://github.com/cpeter1207/librptadvctcss
 Rules-Requires-Root: no
 
-Package: librptadvctcss1
+Package: librptadvctcss2
 Architecture: any
 Multi-Arch: same
 Depends: ${misc:Depends}, ${shlibs:Depends}
@@ -17,7 +17,7 @@ Description: portable CTCSS state for rpt_advanced
 Package: librptadvctcss-dev
 Architecture: any
 Multi-Arch: same
-Depends: ${misc:Depends}, librptadvctcss1 (= ${binary:Version})
+Depends: ${misc:Depends}, librptadvctcss2 (= ${binary:Version})
 Description: development files for rpt_advanced CTCSS
  Public C header and pkg-config metadata for dynamic consumers of the
  portable CTCSS ABI.

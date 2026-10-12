@@ -14,8 +14,8 @@ PKG_CONFIG ?= pkg-config
 
 PACKAGE := librptadvctcss
 CRATE := rptadvctcss
-PACKAGE_VERSION ?= 0.1.0-alpha.1
-SOVERSION := 1
+PACKAGE_VERSION ?= 0.1.0-alpha.2
+SOVERSION := 2
 PREFIX ?= /usr/local
 DESTDIR ?=
 LIBDIR ?= $(PREFIX)/lib
@@ -185,7 +185,7 @@ dist: | build
 	tar --exclude=.git --exclude=.work --exclude=build --exclude=target --exclude=__pycache__ \
 		--exclude=debian/.debhelper --exclude=debian/debhelper-build-stamp \
 		--exclude=debian/files --exclude=debian/tmp \
-		--exclude=debian/librptadvctcss1 --exclude=debian/librptadvctcss-dev \
+		--exclude=debian/librptadvctcss2 --exclude=debian/librptadvctcss-dev \
 		--exclude='debian/*.substvars' --exclude='debian/*.debhelper.log' \
 		--transform='s|^|$(PACKAGE)-$(PACKAGE_VERSION)/|' -czf build/$(PACKAGE)-$(PACKAGE_VERSION).tar.gz \
 		.dockerignore AGENTS.md Cargo.lock Cargo.toml COPYING Doxyfile Makefile QUALITY.md README.md \

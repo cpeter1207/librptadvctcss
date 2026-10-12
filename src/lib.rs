@@ -6,12 +6,14 @@
 #![deny(warnings)]
 #![cfg_attr(coverage, feature(coverage_attribute))]
 
-use std::{ffi::c_char, mem::size_of};
+use std::{ffi::c_char, mem::size_of, ptr};
 
 mod ctcss_receive;
 mod ctcss_transmit;
 
-const ABI_VERSION: u32 = 1;
+const ABI_VERSION: u32 = 2;
+const OK: i32 = 0;
+const INVALID_ARGUMENT: i32 = -1;
 const CAPABILITY_NAME: &[u8] = b"rptadv.ctcss\0";
 
 /// Opaque state for one conditioned CTCSS receive stream.
@@ -24,21 +26,21 @@ pub struct CtcssTx {
     phase: f64,
 }
 
-/// ABI 1 CTCSS function table.
+/// ABI 2 CTCSS function table.
 #[repr(C)]
 pub struct CtcssDescriptor {
     struct_size: u32,
     abi_version: u32,
     capability_name: *const c_char,
-    rx_create: extern "C" fn() -> *mut CtcssRx,
+    rx_create: unsafe extern "C" fn(*mut *mut CtcssRx) -> i32,
     rx_destroy: unsafe extern "C" fn(*mut CtcssRx),
-    rx_configure: unsafe extern "C" fn(*mut CtcssRx, u64, bool),
-    rx_enabled: unsafe extern "C" fn(*const CtcssRx) -> bool,
+    rx_configure: unsafe extern "C" fn(*mut CtcssRx, u64, u32),
+    rx_enabled: unsafe extern "C" fn(*const CtcssRx) -> u32,
     rx_decoded: unsafe extern "C" fn(*const CtcssRx) -> i16,
-    rx_tail_tone_active: unsafe extern "C" fn(*const CtcssRx) -> bool,
-    rx_clear_tail_on_carrier_loss: unsafe extern "C" fn(*mut CtcssRx, bool),
-    rx_process: unsafe extern "C" fn(*mut CtcssRx, *const f32, u32, bool) -> i16,
-    tx_create: extern "C" fn() -> *mut CtcssTx,
+    rx_tail_tone_active: unsafe extern "C" fn(*const CtcssRx) -> u32,
+    rx_clear_tail_on_carrier_loss: unsafe extern "C" fn(*mut CtcssRx, u32),
+    rx_process: unsafe extern "C" fn(*mut CtcssRx, *const f32, u32, u32) -> i16,
+    tx_create: unsafe extern "C" fn(*mut *mut CtcssTx) -> i32,
     tx_destroy: unsafe extern "C" fn(*mut CtcssTx),
     legacy_frequency: extern "C" fn(f64) -> f64,
     tx_generate: unsafe extern "C" fn(*mut CtcssTx, *mut f32, u32, f64, f32, u32, f64),
@@ -65,14 +67,19 @@ static DESCRIPTOR: CtcssDescriptor = CtcssDescriptor {
     tx_generate,
 };
 
-/// Return the immutable ABI 1 function table.
+/// Return the immutable ABI 2 function table.
 #[unsafe(no_mangle)]
 pub extern "C" fn rptadv_ctcss_descriptor() -> *const CtcssDescriptor {
     &DESCRIPTOR
 }
 
-extern "C" fn rx_create() -> *mut CtcssRx {
-    Box::into_raw(Box::new(CtcssRx::default()))
+unsafe extern "C" fn rx_create(out: *mut *mut CtcssRx) -> i32 {
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return INVALID_ARGUMENT;
+    };
+    *out = ptr::null_mut();
+    *out = Box::into_raw(Box::new(CtcssRx::default()));
+    OK
 }
 
 unsafe extern "C" fn rx_destroy(handle: *mut CtcssRx) {
@@ -82,16 +89,16 @@ unsafe extern "C" fn rx_destroy(handle: *mut CtcssRx) {
     }
 }
 
-unsafe extern "C" fn rx_configure(handle: *mut CtcssRx, tone_mask: u64, relax: bool) {
+unsafe extern "C" fn rx_configure(handle: *mut CtcssRx, tone_mask: u64, relax: u32) {
     // SAFETY: the caller holds this receive handle exclusively.
     if let Some(state) = unsafe { handle.as_mut() } {
-        state.0.configure(tone_mask, relax);
+        state.0.configure(tone_mask, relax != 0);
     }
 }
 
-unsafe extern "C" fn rx_enabled(handle: *const CtcssRx) -> bool {
+unsafe extern "C" fn rx_enabled(handle: *const CtcssRx) -> u32 {
     // SAFETY: the caller owns the handle for the duration of this call.
-    unsafe { handle.as_ref() }.is_some_and(|state| state.0.enabled())
+    u32::from(unsafe { handle.as_ref() }.is_some_and(|state| state.0.enabled()))
 }
 
 unsafe extern "C" fn rx_decoded(handle: *const CtcssRx) -> i16 {
@@ -99,15 +106,15 @@ unsafe extern "C" fn rx_decoded(handle: *const CtcssRx) -> i16 {
     unsafe { handle.as_ref() }.map_or(-1, |state| state.0.decoded())
 }
 
-unsafe extern "C" fn rx_tail_tone_active(handle: *const CtcssRx) -> bool {
+unsafe extern "C" fn rx_tail_tone_active(handle: *const CtcssRx) -> u32 {
     // SAFETY: the caller owns the handle for the duration of this call.
-    unsafe { handle.as_ref() }.is_some_and(|state| state.0.tail_tone_active())
+    u32::from(unsafe { handle.as_ref() }.is_some_and(|state| state.0.tail_tone_active()))
 }
 
-unsafe extern "C" fn rx_clear_tail_on_carrier_loss(handle: *mut CtcssRx, carrier: bool) {
+unsafe extern "C" fn rx_clear_tail_on_carrier_loss(handle: *mut CtcssRx, carrier: u32) {
     // SAFETY: the caller holds this receive handle exclusively.
     if let Some(state) = unsafe { handle.as_mut() } {
-        state.0.clear_tail_on_carrier_loss(carrier);
+        state.0.clear_tail_on_carrier_loss(carrier != 0);
     }
 }
 
@@ -115,7 +122,7 @@ unsafe extern "C" fn rx_process(
     handle: *mut CtcssRx,
     samples: *const f32,
     count: u32,
-    carrier: bool,
+    carrier: u32,
 ) -> i16 {
     // SAFETY: the caller supplies a readable count-sized buffer and holds the
     // receive handle exclusively. A zero-length callback may have no buffer;
@@ -126,11 +133,16 @@ unsafe extern "C" fn rx_process(
     if count != 0 && samples.is_null() {
         return -1;
     }
-    unsafe { state.0.process(samples, count, carrier) }
+    unsafe { state.0.process(samples, count, carrier != 0) }
 }
 
-extern "C" fn tx_create() -> *mut CtcssTx {
-    Box::into_raw(Box::new(CtcssTx::default()))
+unsafe extern "C" fn tx_create(out: *mut *mut CtcssTx) -> i32 {
+    let Some(out) = (unsafe { out.as_mut() }) else {
+        return INVALID_ARGUMENT;
+    };
+    *out = ptr::null_mut();
+    *out = Box::into_raw(Box::new(CtcssTx::default()));
+    OK
 }
 
 extern "C" fn legacy_frequency(frequency_hz: f64) -> f64 {
@@ -186,33 +198,43 @@ mod tests {
             api.struct_size as usize,
             std::mem::size_of::<CtcssDescriptor>()
         );
-        assert_eq!(api.abi_version, 1);
+        assert_eq!(api.abi_version, 2);
         assert_eq!(
             unsafe { std::ffi::CStr::from_ptr(api.capability_name) }.to_bytes(),
             b"rptadv.ctcss"
         );
-        let rx = (api.rx_create)();
-        let tx = (api.tx_create)();
+        let mut rx = ptr::null_mut();
+        let mut tx = ptr::null_mut();
+        assert_eq!(
+            unsafe { (api.rx_create)(ptr::null_mut()) },
+            INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { (api.tx_create)(ptr::null_mut()) },
+            INVALID_ARGUMENT
+        );
+        assert_eq!(unsafe { (api.rx_create)(&mut rx) }, OK);
+        assert_eq!(unsafe { (api.tx_create)(&mut tx) }, OK);
         assert!(!rx.is_null() && !tx.is_null());
         unsafe {
-            (api.rx_configure)(rx, 1 << 11, false);
-            assert!((api.rx_enabled)(rx));
-            assert!(!(api.rx_tail_tone_active)(rx));
-            (api.rx_clear_tail_on_carrier_loss)(rx, true);
+            (api.rx_configure)(rx, 1 << 11, 7);
+            assert_eq!((api.rx_enabled)(rx), 1);
+            assert_eq!((api.rx_tail_tone_active)(rx), 0);
+            (api.rx_clear_tail_on_carrier_loss)(rx, 7);
             assert_eq!((*rx).0.test_detector_decode(11), 0);
-            assert_eq!((api.rx_process)(rx, std::ptr::null(), 1, true), -1);
+            assert_eq!((api.rx_process)(rx, std::ptr::null(), 1, 7), -1);
             let sample = [0.0_f32];
-            assert_eq!((api.rx_process)(rx, sample.as_ptr(), 1, true), -1);
+            assert_eq!((api.rx_process)(rx, sample.as_ptr(), 1, 7), -1);
             assert_eq!((api.rx_decoded)(rx), -1);
             (api.tx_generate)(tx, std::ptr::null_mut(), 1, 100.0, 0.25, 1, 0.0);
             (api.tx_generate)(tx, std::ptr::null_mut(), 0, 100.0, 0.25, 1, 0.0);
-            (api.rx_configure)(std::ptr::null_mut(), 1, false);
-            assert!(!(api.rx_enabled)(std::ptr::null()));
+            (api.rx_configure)(std::ptr::null_mut(), 1, 0);
+            assert_eq!((api.rx_enabled)(std::ptr::null()), 0);
             assert_eq!((api.rx_decoded)(std::ptr::null()), -1);
-            assert!(!(api.rx_tail_tone_active)(std::ptr::null()));
-            (api.rx_clear_tail_on_carrier_loss)(std::ptr::null_mut(), false);
+            assert_eq!((api.rx_tail_tone_active)(std::ptr::null()), 0);
+            (api.rx_clear_tail_on_carrier_loss)(std::ptr::null_mut(), 0);
             assert_eq!(
-                (api.rx_process)(std::ptr::null_mut(), std::ptr::null(), 1, true),
+                (api.rx_process)(std::ptr::null_mut(), std::ptr::null(), 1, 7),
                 -1
             );
             (api.tx_generate)(
@@ -234,8 +256,10 @@ mod tests {
     #[test]
     fn independent_transmit_handles_match_chunked_output() {
         let api = unsafe { &*rptadv_ctcss_descriptor() };
-        let whole = (api.tx_create)();
-        let split = (api.tx_create)();
+        let mut whole = ptr::null_mut();
+        let mut split = ptr::null_mut();
+        assert_eq!(unsafe { (api.tx_create)(&mut whole) }, OK);
+        assert_eq!(unsafe { (api.tx_create)(&mut split) }, OK);
         let frequency = (api.legacy_frequency)(114.8);
         assert_eq!(frequency, 114.74609375);
         let mut whole_pcm = [0.0_f32; 960];
@@ -272,7 +296,8 @@ mod tests {
     #[test]
     fn zero_length_null_receive_callback_clears_tail_on_carrier_loss() {
         let api = unsafe { &*rptadv_ctcss_descriptor() };
-        let rx = (api.rx_create)();
+        let mut rx = ptr::null_mut();
+        assert_eq!(unsafe { (api.rx_create)(&mut rx) }, OK);
         let mut selected = [0.0_f32; 8_000];
         let mut tail = [0.0_f32; 256];
         for (index, sample) in selected.iter_mut().enumerate() {
@@ -284,20 +309,20 @@ mod tests {
             *sample = if phase.sin() >= 0.0 { 625.0 } else { -625.0 } / 32_768.0;
         }
         unsafe {
-            (api.rx_configure)(rx, 1 << 11, false);
+            (api.rx_configure)(rx, 1 << 11, 0);
             for block in selected.chunks(160) {
-                (api.rx_process)(rx, block.as_ptr(), block.len() as u32, true);
+                (api.rx_process)(rx, block.as_ptr(), block.len() as u32, 1);
             }
             assert_eq!((api.rx_decoded)(rx), 11);
             assert_eq!(
-                (api.rx_process)(rx, tail.as_ptr(), tail.len() as u32, true),
+                (api.rx_process)(rx, tail.as_ptr(), tail.len() as u32, 1),
                 -1
             );
-            assert!((api.rx_tail_tone_active)(rx));
-            assert_eq!((api.rx_process)(rx, std::ptr::null(), 0, true), -1);
-            assert!((api.rx_tail_tone_active)(rx));
-            assert_eq!((api.rx_process)(rx, std::ptr::null(), 0, false), -1);
-            assert!(!(api.rx_tail_tone_active)(rx));
+            assert_eq!((api.rx_tail_tone_active)(rx), 1);
+            assert_eq!((api.rx_process)(rx, std::ptr::null(), 0, 7), -1);
+            assert_eq!((api.rx_tail_tone_active)(rx), 1);
+            assert_eq!((api.rx_process)(rx, std::ptr::null(), 0, 0), -1);
+            assert_eq!((api.rx_tail_tone_active)(rx), 0);
             (api.rx_destroy)(rx);
         }
     }
