@@ -41,7 +41,7 @@ struct rptadv_ctcss_descriptor {
   void (*rx_clear_tail_on_carrier_loss)(struct rptadv_ctcss_rx *handle,
                                         bool carrier);
   /** @brief Consume conditioned 8 kHz mono F32 samples; return table index or -1.
-   * @param samples Readable for count values. A null pointer is rejected.
+   * @param samples Readable for count values. Null is accepted only when count is zero.
    * @param count Number of samples in this callback.
    * @param carrier Current CTCSS carrier indication.
    */

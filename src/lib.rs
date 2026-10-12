@@ -118,11 +118,12 @@ unsafe extern "C" fn rx_process(
     carrier: bool,
 ) -> i16 {
     // SAFETY: the caller supplies a readable count-sized buffer and holds the
-    // receive handle exclusively. Invalid pointer arguments leave it untouched.
+    // receive handle exclusively. A zero-length callback may have no buffer;
+    // the detector still observes carrier loss on that callback.
     let Some(state) = (unsafe { handle.as_mut() }) else {
         return -1;
     };
-    if samples.is_null() {
+    if count != 0 && samples.is_null() {
         return -1;
     }
     unsafe { state.0.process(samples, count, carrier) }
@@ -265,6 +266,39 @@ mod tests {
         }
         for (whole, split) in whole_pcm.into_iter().zip(split_pcm) {
             assert!((whole - split).abs() < 1e-7);
+        }
+    }
+
+    #[test]
+    fn zero_length_null_receive_callback_clears_tail_on_carrier_loss() {
+        let api = unsafe { &*rptadv_ctcss_descriptor() };
+        let rx = (api.rx_create)();
+        let mut selected = [0.0_f32; 8_000];
+        let mut tail = [0.0_f32; 256];
+        for (index, sample) in selected.iter_mut().enumerate() {
+            let phase = 2.0 * core::f32::consts::PI * 100.0 * index as f32 / 8_000.0;
+            *sample = if phase.sin() >= 0.0 { 625.0 } else { -625.0 } / 32_768.0;
+        }
+        for (index, sample) in tail.iter_mut().enumerate() {
+            let phase = 2.0 * core::f32::consts::PI * 55.0 * index as f32 / 8_000.0;
+            *sample = if phase.sin() >= 0.0 { 625.0 } else { -625.0 } / 32_768.0;
+        }
+        unsafe {
+            (api.rx_configure)(rx, 1 << 11, false);
+            for block in selected.chunks(160) {
+                (api.rx_process)(rx, block.as_ptr(), block.len() as u32, true);
+            }
+            assert_eq!((api.rx_decoded)(rx), 11);
+            assert_eq!(
+                (api.rx_process)(rx, tail.as_ptr(), tail.len() as u32, true),
+                -1
+            );
+            assert!((api.rx_tail_tone_active)(rx));
+            assert_eq!((api.rx_process)(rx, std::ptr::null(), 0, true), -1);
+            assert!((api.rx_tail_tone_active)(rx));
+            assert_eq!((api.rx_process)(rx, std::ptr::null(), 0, false), -1);
+            assert!(!(api.rx_tail_tone_active)(rx));
+            (api.rx_destroy)(rx);
         }
     }
 }
