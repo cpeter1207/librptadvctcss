@@ -1,0 +1,10 @@
+prefix=@PREFIX@
+libdir=@LIBDIR@
+includedir=${prefix}/include
+abi_version=@ABI_VERSION@
+
+Name: librptadvctcss
+Description: Portable CTCSS receive and transmit ABI for rpt_advanced
+Version: @VERSION@
+Libs: -L${libdir} -lrptadvctcss
+Cflags: -I${includedir}
